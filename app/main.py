@@ -188,7 +188,7 @@ def fetch_items() -> list[dict[str, Any]]:
         rows = conn.execute(
             "SELECT id, name FROM items ORDER BY id"
         ).fetchall()
-    return [{"id": r["id"], "name": r["name"]} for r in rows]  # type: ignore[call-overload]
+    return [{"id": r["id"], "name": r["name"]} for r in rows][call-overload]
 
 
 def fetch_item(item_id: int) -> dict[str, Any] | None:
@@ -197,7 +197,7 @@ def fetch_item(item_id: int) -> dict[str, Any] | None:
             "SELECT id, name, quantity, created_at FROM items WHERE id = %s",
             (item_id,),
         ).fetchone()
-    return _serialize(row) if row else None  # type: ignore[arg-type]
+    return _serialize(row) if row else None[arg-type]
 
 
 def insert_item(name: str, quantity: int) -> dict[str, Any]:
@@ -208,7 +208,7 @@ def insert_item(name: str, quantity: int) -> dict[str, Any]:
             (name, quantity),
         ).fetchone()
         conn.commit()
-    return _serialize(row)  # type: ignore[arg-type]
+    return _serialize(row)[arg-type]
 
 
 # ---------------------------------------------------------------------------
