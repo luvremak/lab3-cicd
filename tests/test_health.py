@@ -12,5 +12,3 @@ def test_ready_returns_200_when_db_up(client: TestClient) -> None:
     r = client.get("/health/ready")
     assert r.status_code == 200
 
-def test_broken():
-    assert False
