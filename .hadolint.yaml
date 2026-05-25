@@ -1,0 +1,11 @@
+# hadolint: Dockerfile linter configuration.
+#
+# DL3007: avoid `latest` tag — we pin `python:3.13-slim` which is acceptable.
+# DL3008: pin apt-get versions — we do not run apt-get in the slim base.
+# DL3013: pin pip versions — versions are pinned in requirements.txt.
+# DL3059: multiple consecutive RUN — false positive for our two-RUN layout.
+ignored:
+  - DL3007
+  - DL3008
+  - DL3013
+  - DL3059

@@ -1,0 +1,252 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs for the same ref when a new push arrives.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ==========================================================================
+  # 1. LINT — runs on every trigger.
+  # Checks Python (ruff + mypy), Dockerfile (hadolint), shell (shellcheck),
+  # YAML (yamllint). Any failure stops the pipeline before tests run.
+  # ==========================================================================
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python tooling
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: ruff (style + bugs)
+        run: ruff check app tests
+
+      - name: mypy (types)
+        run: mypy app
+
+      - name: hadolint (Dockerfile)
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          config: .hadolint.yaml
+
+      - name: shellcheck (shell scripts)
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: '.'
+          format: gcc
+          severity: warning
+
+      - name: yamllint (YAML files)
+        run: yamllint .
+
+  # ==========================================================================
+  # 2. TEST — runs pytest with coverage against a real PostgreSQL instance.
+  # Fails if coverage is below 40%. Uploads HTML coverage report as artifact.
+  # ==========================================================================
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: lint
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: mywebapp
+          POSTGRES_USER: mywebapp
+          POSTGRES_PASSWORD: testpass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run pytest with coverage
+        env:
+          MYWEBAPP_TEST_DB_HOST: 127.0.0.1
+          MYWEBAPP_TEST_DB_PORT: 5432
+          MYWEBAPP_TEST_DB_NAME: mywebapp
+          MYWEBAPP_TEST_DB_USER: mywebapp
+          MYWEBAPP_TEST_DB_PASSWORD: testpass
+        run: |
+          pytest \
+            --cov=app --cov-report=term-missing \
+            --cov-report=html:htmlcov \
+            --cov-report=xml:coverage.xml \
+            --cov-fail-under=40
+
+      - name: Upload coverage HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: htmlcov/
+          retention-days: 30
+
+      - name: Upload coverage XML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          retention-days: 30
+
+  # ==========================================================================
+  # 3. BUILD — production image, pushed to GHCR.
+  # Runs only on pushes to main and annotated tags (NOT on PRs).
+  # Tags:
+  #   * push to main : latest, sha-<full-commit-hash>
+  #   * annotated tag: stable, <tag-name>
+  # ==========================================================================
+  build:
+    name: Build & push image
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image_ref: ${{ steps.image_ref.outputs.image_ref }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=sha-${{ github.sha }},enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=stable,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=ref,event=tag
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Expose deploy reference
+        id: image_ref
+        run: |
+          # CD pulls by tag name (e.g. "v1.0.0" or "stable").
+          # Use the tag name when this is a tag build; otherwise sha-...
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "image_ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${GITHUB_REF##*/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "image_ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ==========================================================================
+  # 4. DEPLOY — runs on the self-hosted runner. Triggered only by annotated
+  # tags. SSHes into the target node and starts the new version.
+  # ==========================================================================
+  deploy:
+    name: Deploy
+    runs-on: self-hosted
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare SSH connection to target node
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.TARGET_SSH_KEY }}" > ~/.ssh/target_node
+          chmod 600 ~/.ssh/target_node
+          ssh-keyscan -H "${{ secrets.TARGET_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Copy deploy script to target
+        run: |
+          scp -i ~/.ssh/target_node \
+            deploy/deploy.sh \
+            "${{ secrets.TARGET_USER }}@${{ secrets.TARGET_HOST }}:/tmp/deploy.sh"
+
+      - name: Run deploy on target node
+        run: |
+          IMAGE_REF="${{ needs.build.outputs.image_ref }}"
+          ssh -i ~/.ssh/target_node \
+            "${{ secrets.TARGET_USER }}@${{ secrets.TARGET_HOST }}" \
+            "sudo IMAGE_REF='$IMAGE_REF' bash /tmp/deploy.sh"
+
+  # ==========================================================================
+  # 5. VERIFY — also on the self-hosted runner. After deploy, run smoke checks
+  # against the target node. Failure fails the workflow.
+  # ==========================================================================
+  verify:
+    name: Verify
+    runs-on: self-hosted
+    needs: deploy
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Copy verify script to target
+        run: |
+          scp -i ~/.ssh/target_node \
+            verify/verify.sh \
+            "${{ secrets.TARGET_USER }}@${{ secrets.TARGET_HOST }}:/tmp/verify.sh"
+
+      - name: Run verification on target node
+        run: |
+          ssh -i ~/.ssh/target_node \
+            "${{ secrets.TARGET_USER }}@${{ secrets.TARGET_HOST }}" \
+            "bash /tmp/verify.sh"

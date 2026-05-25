@@ -1,0 +1,26 @@
+---
+# yamllint configuration.
+# Default ruleset with a couple of relaxations appropriate for CI workflows
+# and compose files.
+
+extends: default
+
+rules:
+  line-length:
+    max: 140
+    level: warning
+  truthy:
+    # 'on:' at the top of GitHub workflow files is fine; do not flag it.
+    allowed-values: ['true', 'false', 'on', 'off']
+    check-keys: false
+  comments:
+    min-spaces-from-content: 1
+  document-start:
+    present: false
+  braces:
+    max-spaces-inside: 1
+
+ignore: |
+  htmlcov/
+  .venv/
+  node_modules/

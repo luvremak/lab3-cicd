@@ -1,0 +1,65 @@
+[project]
+name = "mywebapp"
+version = "0.1.0"
+description = "Simple Inventory service (Lab 1 — KPI)"
+requires-python = ">=3.12"
+
+# ============================================================================
+# ruff — linter + formatter, fast replacement for flake8/isort/pyupgrade
+# ============================================================================
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "B",   # bugbear (likely bugs)
+    "UP",  # pyupgrade
+    "SIM", # simplify
+]
+ignore = [
+    "E501",  # long line — line-length handles this; some long docstrings ok
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]   # asserts are the point of test files
+"app/main.py" = ["SIM103"]  # the explicit if/return pair documents content negotiation logic
+
+# ============================================================================
+# mypy — static type checking, only on application code
+# ============================================================================
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+check_untyped_defs = true
+
+# ============================================================================
+# pytest + pytest-cov
+# ============================================================================
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra --strict-markers"
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+omit = [
+    "app/migrate.py",  # exercised in CI via the integration tests indirectly
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
